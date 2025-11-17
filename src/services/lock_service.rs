@@ -1,4 +1,3 @@
-use fs2::FileExt;
 use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
 use std::path::PathBuf;
@@ -19,7 +18,7 @@ impl LockService {
             .write(true)
             .create(true)
             .open(&path)?;
-        file.lock_exclusive()?;
+        file.lock()?;
         Ok(())
     }
 
