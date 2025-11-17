@@ -18,6 +18,7 @@ impl LockService {
             .read(true)
             .write(true)
             .create(true)
+            .truncate(true)
             .open(&path)?;
         file.lock_exclusive()?;
         Ok(())

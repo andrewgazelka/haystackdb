@@ -36,133 +36,52 @@ impl Display for CommitListItem {
 }
 
 impl TreeSerialization for CommitListItem {
-    fn serialize(&self) -> Vec<u8> {
-        let mut serialized = Vec::new();
+    fn write_to<W: std::io::Write>(&self, writer: &mut W) -> std::io::Result<()> {
+        self.hash.write_to(writer)?;
+        self.timestamp.write_to(writer)?;
+        self.vectors.write_to(writer)?;
+        self.kvs.write_to(writer)?;
+        Ok(())
+    }
 
-        serialized.extend_from_slice(self.hash.to_le_bytes().as_ref());
-        serialized.extend_from_slice(self.timestamp.to_le_bytes().as_ref());
-
-        serialized.extend_from_slice(self.vectors.len().to_le_bytes().as_ref());
-        for vector in &self.vectors {
-            serialized.extend_from_slice(vector.as_ref());
-        }
-
-        serialized.extend_from_slice(self.kvs.len().to_le_bytes().as_ref());
-        for sub_kvs in &self.kvs {
-            serialized.extend_from_slice(sub_kvs.len().to_le_bytes().as_ref());
-            for kv in sub_kvs {
-                serialized.extend_from_slice(&kv.serialize());
-            }
-        }
-
-        serialized
+    fn serialized_size(&self) -> usize {
+        self.hash.serialized_size()
+            + self.timestamp.serialized_size()
+            + self.vectors.serialized_size()
+            + self.kvs.serialized_size()
     }
 }
 
 impl TreeDeserialization for CommitListItem {
-    fn deserialize(data: &[u8]) -> Self {
-        let mut offset = 0;
+    fn read_from<R: std::io::Read>(reader: &mut R) -> std::io::Result<Self> {
+        let hash = u64::read_from(reader)?;
+        let timestamp = u64::read_from(reader)?;
+        let vectors = Vec::read_from(reader)?;
+        let kvs = Vec::read_from(reader)?;
 
-        let hash = u64::from_le_bytes(data[offset..offset + 8].try_into().unwrap());
-        offset += 8;
-        let timestamp = u64::from_le_bytes(data[offset..offset + 8].try_into().unwrap());
-        offset += 8;
-
-        let vectors_len = u64::from_le_bytes(data[offset..offset + 8].try_into().unwrap()) as usize;
-
-        offset += 8;
-
-        let mut vectors = Vec::new();
-        for _ in 0..vectors_len {
-            let mut vector = [0; QUANTIZED_VECTOR_SIZE];
-            vector.copy_from_slice(&data[offset..offset + QUANTIZED_VECTOR_SIZE]);
-            offset += QUANTIZED_VECTOR_SIZE;
-            vectors.push(vector);
-        }
-
-        let kvs_len = u64::from_le_bytes(data[offset..offset + 8].try_into().unwrap()) as usize;
-        offset += 8;
-
-        let mut kvs = Vec::new();
-        for _ in 0..kvs_len {
-            let mut sub_kvs = Vec::new();
-            let sub_kvs_len =
-                u64::from_le_bytes(data[offset..offset + 8].try_into().unwrap()) as usize;
-            offset += 8;
-            for _ in 0..sub_kvs_len {
-                let kv = KVPair::deserialize(&data[offset..]);
-                offset += kv.serialize().len();
-                sub_kvs.push(kv);
-            }
-
-            kvs.push(sub_kvs);
-        }
-
-        CommitListItem {
+        Ok(CommitListItem {
             hash,
             timestamp,
             kvs,
             vectors,
-        }
+        })
     }
 }
 
 impl TreeSerialization for bool {
-    fn serialize(&self) -> Vec<u8> {
-        let mut serialized = Vec::new();
+    fn write_to<W: std::io::Write>(&self, writer: &mut W) -> std::io::Result<()> {
+        writer.write_all(&[*self as u8])
+    }
 
-        serialized.extend_from_slice(&[*self as u8]);
-
-        serialized
+    fn serialized_size(&self) -> usize {
+        1
     }
 }
 
 impl TreeDeserialization for bool {
-    fn deserialize(data: &[u8]) -> Self {
-        data[0] == 1
-    }
-}
-
-impl TreeSerialization for u64 {
-    fn serialize(&self) -> Vec<u8> {
-        self.to_le_bytes().to_vec()
-    }
-}
-
-impl TreeDeserialization for u64 {
-    fn deserialize(data: &[u8]) -> Self {
-        u64::from_le_bytes(data.try_into().unwrap())
-    }
-}
-
-impl TreeSerialization for Vec<u64> {
-    fn serialize(&self) -> Vec<u8> {
-        let mut serialized = Vec::new();
-
-        serialized.extend_from_slice(self.len().to_le_bytes().as_ref());
-        for val in self {
-            serialized.extend_from_slice(val.to_le_bytes().as_ref());
-        }
-
-        serialized
-    }
-}
-
-impl TreeDeserialization for Vec<u64> {
-    fn deserialize(data: &[u8]) -> Self {
-        let mut offset = 0;
-
-        let len = u64::from_le_bytes(data[offset..offset + 8].try_into().unwrap()) as usize;
-        offset += 8;
-
-        let mut vals = Vec::new();
-        for _ in 0..len {
-            let val = u64::from_le_bytes(data[offset..offset + 8].try_into().unwrap());
-            offset += 8;
-            vals.push(val);
-        }
-
-        vals
+    fn read_from<R: std::io::Read>(reader: &mut R) -> std::io::Result<Self> {
+        let byte = u8::read_from(reader)?;
+        Ok(byte == 1)
     }
 }
 
@@ -211,6 +130,8 @@ impl WAL {
         };
 
         self.commit_list.insert(hash, commit_list_item)?;
+        // Flush to ensure durability for WAL
+        self.commit_list.flush()?;
 
         // self.commit_finish.insert(hash, false)?;
 
@@ -225,26 +146,6 @@ impl WAL {
             Err(_) => Ok(false),
         }
     }
-
-    // pub fn get_commits_after(&self, timestamp: u64) -> Result<Vec<CommitListItem>, io::Error> {
-    //     let hashes = self.timestamps.get_range(timestamp, u64::MAX)?;
-
-    //     let mut commits = Vec::new();
-
-    //     for (_, hash) in hashes {
-    //         match self.commit_list.search(hash) {
-    //             Ok(commit) => match commit {
-    //                 Some(c) => {
-    //                     commits.push(c);
-    //                 }
-    //                 None => {}
-    //             },
-    //             Err(_) => {}
-    //         }
-    //     }
-
-    //     Ok(commits)
-    // }
 
     pub fn get_commits(&mut self) -> Result<Vec<CommitListItem>, io::Error> {
         let start = 0;
@@ -272,14 +173,8 @@ impl WAL {
 
         for (_, hash) in hash_end {
             for h in hash {
-                match self.commit_list.search(h) {
-                    Ok(commit) => match commit {
-                        Some(c) => {
-                            commits.push(c);
-                        }
-                        None => {}
-                    },
-                    Err(_) => {}
+                if let Ok(Some(c)) = self.commit_list.search(h) {
+                    commits.push(c);
                 }
             }
         }
@@ -308,21 +203,12 @@ impl WAL {
 
         for (_, hashes) in all_hashes {
             for hash in hashes {
-                match self.commit_finish.has_key(hash) {
-                    Ok(has_key) => {
-                        if !has_key {
-                            match self.commit_list.search(hash) {
-                                Ok(commit) => match commit {
-                                    Some(c) => {
-                                        commits.push(c);
-                                    }
-                                    None => {}
-                                },
-                                Err(_) => {}
-                            }
+                if let Ok(has_key) = self.commit_finish.has_key(hash) {
+                    if !has_key {
+                        if let Ok(Some(c)) = self.commit_list.search(hash) {
+                            commits.push(c);
                         }
                     }
-                    Err(_) => {}
                 }
             }
         }
@@ -362,7 +248,7 @@ impl WAL {
         }
 
         let quantized_vectors: Vec<[u8; QUANTIZED_VECTOR_SIZE]> =
-            vectors.iter().map(|v| quantize(v)).collect();
+            vectors.iter().map(quantize).collect();
 
         let hash = self.compute_hash(&quantized_vectors, &kvs);
 
@@ -383,6 +269,7 @@ impl WAL {
 
         self.timestamps
             .insert(current_timestamp, current_timestamp_vals)?;
+        self.timestamps.flush()?;
 
         self.add_to_commit_list(hash, quantized_vectors, kvs)?;
 
@@ -403,7 +290,7 @@ impl WAL {
 
         let quantized_vectors: Vec<Vec<[u8; QUANTIZED_VECTOR_SIZE]>> = vectors
             .iter()
-            .map(|v| v.iter().map(|v| quantize(v)).collect())
+            .map(|v| v.iter().map(quantize).collect())
             .collect();
 
         let mut hashes = Vec::new();
@@ -419,7 +306,7 @@ impl WAL {
         }
         .unwrap_or(Vec::new());
 
-        for (_i, (v, k)) in quantized_vectors.iter().zip(kvs.iter()).enumerate() {
+        for (v, k) in quantized_vectors.iter().zip(kvs.iter()) {
             let hash = self.compute_hash(v, k);
             hashes.push(hash);
 
@@ -428,6 +315,7 @@ impl WAL {
 
         self.timestamps
             .insert(current_timestamp, current_timestamp_vals)?;
+        self.timestamps.flush()?;
 
         for (hash, (v, k)) in hashes.iter().zip(quantized_vectors.iter().zip(kvs.iter())) {
             self.add_to_commit_list(*hash, v.clone(), k.clone())?;
@@ -438,7 +326,16 @@ impl WAL {
 
     pub fn mark_commit_finished(&mut self, hash: u64) -> io::Result<()> {
         self.commit_finish.insert(hash, true)?;
+        self.commit_finish.flush()?;
 
+        Ok(())
+    }
+
+    /// Flush all WAL components to disk for durability
+    pub fn flush(&mut self) -> io::Result<()> {
+        self.commit_list.flush()?;
+        self.timestamps.flush()?;
+        self.commit_finish.flush()?;
         Ok(())
     }
 }

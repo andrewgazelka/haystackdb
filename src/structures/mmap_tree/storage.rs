@@ -5,7 +5,6 @@ use memmap::MmapMut;
 use std::fs;
 use std::fs::OpenOptions;
 use std::io;
-use std::path::PathBuf;
 
 use super::serialization::{TreeDeserialization, TreeSerialization};
 use std::fmt::Debug;
@@ -13,7 +12,7 @@ use std::fmt::Debug;
 pub struct StorageManager<K, V> {
     pub mmap: MmapMut,
     pub used_space: usize,
-    path: PathBuf,
+    file: fs::File,
     phantom: std::marker::PhantomData<(K, V)>,
     locks: LockService,
 }
@@ -31,13 +30,13 @@ where
     K: Clone + Ord + TreeSerialization + TreeDeserialization + Debug,
     V: Clone + TreeSerialization + TreeDeserialization,
 {
-    pub fn new(path: PathBuf) -> io::Result<Self> {
+    pub fn new(path: std::path::PathBuf) -> io::Result<Self> {
         let exists = path.exists();
         let file = OpenOptions::new()
             .read(true)
             .write(true)
             .create(!exists)
-            .open(path.clone())?;
+            .open(&path)?;
 
         if !exists {
             file.set_len(1_000_000)?;
@@ -46,7 +45,7 @@ where
         let mmap = unsafe { MmapMut::map_mut(&file)? };
 
         // take path, remove everything after the last dot (the extension), and add _locks
-        let mut locks_path = path.clone().to_str().unwrap().to_string();
+        let mut locks_path = path.to_str().unwrap().to_string();
         let last_dot = locks_path.rfind('.').unwrap();
         locks_path.replace_range(last_dot.., "_locks");
 
@@ -55,7 +54,7 @@ where
         let mut manager = StorageManager {
             mmap,
             used_space: 0,
-            path,
+            file,
             phantom: std::marker::PhantomData,
             locks: LockService::new(locks_path.into()),
         };
@@ -80,7 +79,7 @@ where
 
         let serialized_len = serialized.len();
 
-        let num_blocks_required = (serialized_len + BLOCK_DATA_SIZE - 1) / BLOCK_DATA_SIZE;
+        let num_blocks_required = serialized_len.div_ceil(BLOCK_DATA_SIZE);
 
         let mut needs_new_blocks = true;
 
@@ -97,7 +96,7 @@ where
                     .unwrap(),
             );
             prev_num_blocks_required =
-                (prev_serialized_len + BLOCK_DATA_SIZE - 1) / BLOCK_DATA_SIZE;
+                prev_serialized_len.div_ceil(BLOCK_DATA_SIZE);
             needs_new_blocks = num_blocks_required > prev_num_blocks_required;
 
             // println!(
@@ -111,9 +110,9 @@ where
         //     node.offset, serialized_len
         // );
 
-        let mut current_block_offset = node.offset.clone();
+        let mut current_block_offset = node.offset;
 
-        let original_offset = current_block_offset.clone();
+        let original_offset = current_block_offset;
 
         let mut remaining_bytes_to_write = serialized_len;
 
@@ -229,8 +228,8 @@ where
     }
 
     pub fn load_node(&mut self, offset: usize) -> io::Result<Node<K, V>> {
-        let original_offset = offset.clone();
-        let mut offset = offset.clone();
+        let original_offset = offset;
+        let mut offset = offset;
 
         // println!("Loading node at offset: {}", offset);
 
@@ -286,7 +285,7 @@ where
 
             bytes_read += bytes_to_read;
 
-            serialized.extend_from_slice(&self.read_from_offset(offset, bytes_to_read));
+            serialized.extend_from_slice(self.read_from_offset(offset, bytes_to_read));
 
             offset += BLOCK_DATA_SIZE;
 
@@ -317,14 +316,9 @@ where
         let current_len = self.mmap.len();
         let new_len = current_len * 2;
 
-        let file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(self.path.clone())?; // Ensure this path is handled correctly
+        self.file.set_len(new_len as u64)?;
 
-        file.set_len(new_len as u64)?;
-
-        self.mmap = unsafe { MmapMut::map_mut(&file)? };
+        self.mmap = unsafe { MmapMut::map_mut(&self.file)? };
         Ok(())
     }
 
@@ -366,7 +360,13 @@ where
 
     fn write_to_offset(&mut self, offset: usize, data: &[u8]) {
         self.mmap[offset..offset + data.len()].copy_from_slice(data);
-        // self.mmap.flush().unwrap();
+    }
+
+    /// Flush mmap and sync to disk for durability
+    pub fn flush(&mut self) -> io::Result<()> {
+        self.mmap.flush()?;
+        self.file.sync_all()?;
+        Ok(())
     }
 
     fn read_from_offset(&self, offset: usize, len: usize) -> &[u8] {

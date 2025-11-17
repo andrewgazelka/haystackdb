@@ -8,7 +8,7 @@ use crate::structures::mmap_tree::Tree;
 
 use super::mmap_tree::serialization::{TreeDeserialization, TreeSerialization};
 
-#[derive(Debug, Serialize, Deserialize, Clone, Hash)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct KVPair {
     pub key: String,
     pub value: String,
@@ -27,6 +27,13 @@ impl PartialEq for KVPair {
 }
 
 impl Eq for KVPair {}
+
+impl Hash for KVPair {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.key.hash(state);
+        self.value.hash(state);
+    }
+}
 
 impl PartialOrd for KVPair {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
@@ -49,33 +56,23 @@ impl Display for KVPair {
 }
 
 impl TreeSerialization for KVPair {
-    fn serialize(&self) -> Vec<u8> {
-        let mut serialized = Vec::new();
+    fn write_to<W: std::io::Write>(&self, writer: &mut W) -> std::io::Result<()> {
+        (self.key.len() as u64).write_to(writer)?;
+        writer.write_all(self.key.as_bytes())?;
+        (self.value.len() as u64).write_to(writer)?;
+        writer.write_all(self.value.as_bytes())
+    }
 
-        serialized.extend_from_slice(self.key.len().to_le_bytes().as_ref());
-        serialized.extend_from_slice(self.key.as_bytes());
-        serialized.extend_from_slice(self.value.len().to_le_bytes().as_ref());
-        serialized.extend_from_slice(self.value.as_bytes());
-
-        serialized
+    fn serialized_size(&self) -> usize {
+        8 + self.key.len() + 8 + self.value.len()
     }
 }
 
 impl TreeDeserialization for KVPair {
-    fn deserialize(data: &[u8]) -> Self {
-        let mut offset = 0;
-
-        let key_len = u64::from_le_bytes(data[offset..offset + 8].try_into().unwrap()) as usize;
-        offset += 8;
-        let key = String::from_utf8(data[offset..offset + key_len].to_vec()).unwrap();
-        offset += key_len;
-
-        let value_len = u64::from_le_bytes(data[offset..offset + 8].try_into().unwrap()) as usize;
-        offset += 8;
-        let value = String::from_utf8(data[offset..offset + value_len].to_vec()).unwrap();
-        // offset += value_len;
-
-        KVPair { key, value }
+    fn read_from<R: std::io::Read>(reader: &mut R) -> std::io::Result<Self> {
+        let key = String::read_from(reader)?;
+        let value = String::read_from(reader)?;
+        Ok(KVPair { key, value })
     }
 }
 
@@ -98,103 +95,49 @@ impl Display for MetadataIndexItem {
 }
 
 impl TreeSerialization for MetadataIndexItem {
-    fn serialize(&self) -> Vec<u8> {
-        let mut serialized = Vec::new();
+    fn write_to<W: std::io::Write>(&self, writer: &mut W) -> std::io::Result<()> {
+        (self.kvs.len() as u64).write_to(writer)?;
 
-        serialized.extend_from_slice(self.kvs.len().to_le_bytes().as_ref());
-        // for kv in &self.kvs {
-        //     serialized.extend_from_slice(kv.key.len().to_le_bytes().as_ref());
-        //     serialized.extend_from_slice(kv.key.as_bytes());
-        //     serialized.extend_from_slice(kv.value.len().to_le_bytes().as_ref());
-        //     serialized.extend_from_slice(kv.value.as_bytes());
-        // }
         for kv in &self.kvs {
-            let serialized_kv = TreeSerialization::serialize(kv);
-            serialized.extend_from_slice(serialized_kv.len().to_le_bytes().as_ref());
-            serialized.extend_from_slice(serialized_kv.as_ref());
+            (kv.serialized_size() as u64).write_to(writer)?;
+            kv.write_to(writer)?;
         }
 
-        // serialized.extend_from_slice(self.id.len().to_le_bytes().as_ref());
-        serialized.extend_from_slice(self.id.to_le_bytes().as_ref());
+        self.id.write_to(writer)?;
+        self.vector_index.write_to(writer)
+    }
 
-        serialized.extend_from_slice(self.vector_index.to_le_bytes().as_ref());
-
-        // serialized.extend_from_slice(self.namespaced_id.len().to_le_bytes().as_ref());
-        // serialized.extend_from_slice(self.namespaced_id.as_bytes());
-
-        serialized
+    fn serialized_size(&self) -> usize {
+        let mut size = 8; // kvs.len()
+        for kv in &self.kvs {
+            size += 8; // kv size prefix
+            size += kv.serialized_size();
+        }
+        size += 16; // id (u128)
+        size += 8; // vector_index (usize)
+        size
     }
 }
 
 impl TreeDeserialization for MetadataIndexItem {
-    fn deserialize(data: &[u8]) -> Self {
-        let mut offset = 0;
-
-        let kvs_len = u64::from_le_bytes(data[offset..offset + 8].try_into().unwrap()) as usize;
-        offset += 8;
+    fn read_from<R: std::io::Read>(reader: &mut R) -> std::io::Result<Self> {
+        let kvs_len = u64::read_from(reader)? as usize;
 
         let mut kvs = Vec::new();
         for _ in 0..kvs_len {
-            // let key_len = u64::from_le_bytes(data[offset..offset + 8].try_into().unwrap()) as usize;
-            // offset += 8;
-
-            // let key = String::from_utf8(data[offset..offset + key_len].to_vec()).unwrap();
-            // offset += key_len;
-
-            // let value_len =
-            //     u64::from_le_bytes(data[offset..offset + 8].try_into().unwrap()) as usize;
-            // offset += 8;
-
-            // let value = String::from_utf8(data[offset..offset + value_len].to_vec()).unwrap();
-            // offset += value_len;
-
-            // kvs.push(KVPair { key, value });
-
-            let kv_len =
-                usize::from_le_bytes(data[offset..offset + 8].try_into().unwrap()) as usize;
-            offset += 8;
-
-            let kv = TreeDeserialization::deserialize(&data[offset..offset + kv_len]);
-            offset += kv_len;
-
+            let _kv_len = u64::read_from(reader)?; // Size prefix (ignored, we read until complete)
+            let kv = KVPair::read_from(reader)?;
             kvs.push(kv);
         }
 
-        // let id_len = u64::from_le_bytes(data[offset..offset + 8].try_into().unwrap()) as usize;
-        // offset += 8;
+        let id = u128::read_from(reader)?;
+        let vector_index = usize::read_from(reader)?;
 
-        let id = u128::from_le_bytes(data[offset..offset + 16].try_into().unwrap());
-        offset += 16;
-
-        let vector_index = usize::from_le_bytes(data[offset..offset + 8].try_into().unwrap());
-        // offset += 8;
-
-        // let namespaced_id_len =
-        //     u64::from_le_bytes(data[offset..offset + 8].try_into().unwrap()) as usize;
-        // offset += 8;
-
-        // let namespaced_id =
-        //     String::from_utf8(data[offset..offset + namespaced_id_len].to_vec()).unwrap();
-        // offset += namespaced_id_len;
-
-        MetadataIndexItem {
+        Ok(MetadataIndexItem {
             kvs,
             id,
             vector_index,
-            // namespaced_id,
-        }
-    }
-}
-
-impl TreeSerialization for u128 {
-    fn serialize(&self) -> Vec<u8> {
-        self.to_le_bytes().to_vec()
-    }
-}
-
-impl TreeDeserialization for u128 {
-    fn deserialize(data: &[u8]) -> Self {
-        u128::from_le_bytes(data.try_into().unwrap())
+        })
     }
 }
 
@@ -221,9 +164,6 @@ impl MetadataIndex {
     }
 
     pub fn get(&mut self, key: u128) -> Option<MetadataIndexItem> {
-        match self.tree.search(key) {
-            Ok(v) => v,
-            Err(_) => None,
-        }
+        self.tree.search(key).unwrap_or_default()
     }
 }

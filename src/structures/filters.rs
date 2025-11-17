@@ -28,7 +28,7 @@ impl Filters {
     pub fn new(indices: Vec<usize>, current_ids: Vec<u128>) -> Self {
         Filters {
             current_indices: indices,
-            current_ids: current_ids,
+            current_ids,
         }
     }
 
@@ -146,10 +146,6 @@ impl Filters {
                 result
             }
             Filter::Eq(key, value) => {
-                println!(
-                    "Evaluating EQ filter for key: {:?}, value: {:?}",
-                    key, value
-                ); // Debug output
                 let kv_pair = KVPair::new(key.clone(), value.clone()); // Ensure correct KVPair creation
                 Filters::from_index(index, &kv_pair)
             }

@@ -3,6 +3,7 @@ use memmap::MmapMut;
 use std::fs::OpenOptions;
 use std::io;
 use std::path::PathBuf;
+use tracing::{debug, error};
 
 const SIZE_OF_U64: usize = std::mem::size_of::<u64>();
 const HEADER_SIZE: usize = SIZE_OF_U64;
@@ -66,7 +67,7 @@ impl DenseVectorList {
     }
 
     fn resize_mmap(&mut self, new_len: usize) -> io::Result<()> {
-        println!("Resizing mmap in DenseVectorList");
+        debug!(new_len, "Resizing mmap in DenseVectorList");
 
         let file = OpenOptions::new()
             .read(true)
@@ -87,24 +88,14 @@ impl DenseVectorList {
         let total_size = vectors.len() * QUANTIZED_VECTOR_SIZE;
         let required_space = start_offset + total_size;
 
-        // println!(
-        //     "Required space: {}, mmap len: {}",
-        //     required_space,
-        //     self.mmap.len()
-        // );
-
         if required_space > self.mmap.len() {
             self.resize_mmap(required_space * 2)?;
         }
-
-        // println!("Batch push");
 
         for (i, vector) in vectors.iter().enumerate() {
             let offset = start_offset + i * QUANTIZED_VECTOR_SIZE;
             self.mmap[offset..offset + QUANTIZED_VECTOR_SIZE].copy_from_slice(vector);
         }
-
-        // println!("Batch push done");
 
         self.used_space += total_size;
         // Update the header in the mmap
@@ -120,10 +111,7 @@ impl DenseVectorList {
         let end = offset + QUANTIZED_VECTOR_SIZE;
 
         if end > self.used_space + HEADER_SIZE {
-            // print everything for debugging
-            println!("Offset: {}", offset);
-            println!("End: {}", end);
-            println!("Used space: {}", self.used_space);
+            error!(offset, end, used_space = self.used_space, "Index out of bounds in get");
 
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -146,22 +134,19 @@ impl DenseVectorList {
         let end = start + num_elements * QUANTIZED_VECTOR_SIZE;
 
         if end > self.used_space + HEADER_SIZE {
-            println!("start: {}", start);
-            println!("End: {}", end);
-            println!("Used space: {}", self.used_space);
-            println!("Num elements: {}", num_elements);
-            println!("Index: {}", index);
+            error!(
+                start,
+                end,
+                used_space = self.used_space,
+                num_elements,
+                index,
+                "Index out of bounds in get_contiguous"
+            );
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "Index out of bounds",
             ));
         }
-
-        // let mut vectors = Vec::with_capacity(num_elements);
-        // for i in 0..num_elements {
-        //     let offset = HEADER_SIZE + (index + i) * QUANTIZED_VECTOR_SIZE;
-        //     vectors.push(self.get(index + i)?);
-        // }
 
         // the indices are contiguous, so we can just get a slice of the mmap
         let vectors: &[[u8; QUANTIZED_VECTOR_SIZE]] = unsafe {
@@ -176,6 +161,10 @@ impl DenseVectorList {
 
     pub fn len(&self) -> usize {
         self.used_space / QUANTIZED_VECTOR_SIZE
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.used_space == 0
     }
 
     pub fn insert(&mut self, index: usize, vector: [u8; QUANTIZED_VECTOR_SIZE]) -> io::Result<()> {

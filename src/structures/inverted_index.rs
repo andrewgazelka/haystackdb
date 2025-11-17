@@ -21,84 +21,57 @@ impl Display for InvertedIndexItem {
 }
 
 impl TreeSerialization for InvertedIndexItem {
-    fn serialize(&self) -> Vec<u8> {
-        let mut serialized = Vec::new();
-
-        serialized.extend_from_slice(self.indices.len().to_le_bytes().as_ref());
+    fn write_to<W: std::io::Write>(&self, writer: &mut W) -> std::io::Result<()> {
+        (self.indices.len() as u64).write_to(writer)?;
 
         let len_of_index_bytes: usize = 8;
-
-        serialized.extend_from_slice(len_of_index_bytes.to_le_bytes().as_ref());
+        len_of_index_bytes.write_to(writer)?;
 
         for index in &self.indices {
-            serialized.extend_from_slice(index.to_le_bytes().as_ref());
+            index.write_to(writer)?;
         }
 
-        serialized.extend_from_slice(self.ids.len().to_le_bytes().as_ref());
+        (self.ids.len() as u64).write_to(writer)?;
 
         let len_of_id_bytes: usize = 16;
-
-        serialized.extend_from_slice(len_of_id_bytes.to_le_bytes().as_ref());
+        len_of_id_bytes.write_to(writer)?;
 
         for id in &self.ids {
-            serialized.extend_from_slice(id.to_le_bytes().as_ref());
+            id.write_to(writer)?;
         }
 
-        serialized
+        Ok(())
+    }
+
+    fn serialized_size(&self) -> usize {
+        8 + // indices.len()
+        8 + // len_of_index_bytes
+        self.indices.len() * 8 + // indices
+        8 + // ids.len()
+        8 + // len_of_id_bytes
+        self.ids.len() * 16 // ids
     }
 }
 
 impl TreeDeserialization for InvertedIndexItem {
-    fn deserialize(data: &[u8]) -> Self {
-        let mut offset = 0;
+    fn read_from<R: std::io::Read>(reader: &mut R) -> std::io::Result<Self> {
+        let indices_len = u64::read_from(reader)? as usize;
+        let _len_of_index_bytes = usize::read_from(reader)?; // Always 8, ignored
 
-        let indices_len = u64::from_le_bytes(data[offset..offset + 8].try_into().unwrap()) as usize;
-        offset += 8;
-        // let mut indices = Vec::new();
-        let len_of_index_bytes = usize::from_le_bytes(data[offset..offset + 8].try_into().unwrap());
-        offset += 8;
+        let mut indices = Vec::with_capacity(indices_len);
+        for _ in 0..indices_len {
+            indices.push(usize::read_from(reader)?);
+        }
 
-        let start = offset;
-        let end = start + indices_len * len_of_index_bytes;
+        let ids_len = u64::read_from(reader)? as usize;
+        let _len_of_id_bytes = usize::read_from(reader)?; // Always 16, ignored
 
-        let indices_bytes = &data[start..end];
+        let mut ids = Vec::with_capacity(ids_len);
+        for _ in 0..ids_len {
+            ids.push(u128::read_from(reader)?);
+        }
 
-        let indices_chunks = indices_bytes.chunks(len_of_index_bytes);
-
-        // for chunk in indices_chunks {
-        //     let index = usize::from_le_bytes(chunk.try_into().unwrap());
-        //     indices.push(index);
-        // }
-
-        let indices = indices_chunks
-            .map(|chunk| usize::from_le_bytes(chunk.try_into().unwrap()))
-            .collect();
-
-        offset = end;
-
-        let ids_len = u64::from_le_bytes(data[offset..offset + 8].try_into().unwrap()) as usize;
-        offset += 8;
-        // let mut ids = Vec::new();
-        let len_of_id_bytes = usize::from_le_bytes(data[offset..offset + 8].try_into().unwrap());
-        offset += 8;
-
-        // get them all and split the bytes into chunks
-
-        let start = offset;
-        let end = start + ids_len * len_of_id_bytes;
-        let ids_bytes = &data[start..end];
-
-        let ids_chunks = ids_bytes.chunks(len_of_id_bytes);
-
-        // for chunk in ids_chunks {
-        //     let id = String::from_utf8(chunk.to_vec()).unwrap();
-        //     ids.push(id);
-        // }
-        let ids = ids_chunks
-            .map(|chunk| u128::from_le_bytes(chunk.try_into().unwrap()))
-            .collect();
-
-        InvertedIndexItem { indices, ids }
+        Ok(InvertedIndexItem { indices, ids })
     }
 }
 
@@ -116,13 +89,13 @@ pub fn compress_indices(indices: Vec<usize>) -> Vec<usize> {
     let mut current_start = indices[0];
     let mut count = 1;
 
-    for i in 1..indices.len() {
-        if indices[i] == current_start + count {
+    for item in indices.iter().skip(1) {
+        if *item == current_start + count {
             count += 1;
         } else {
             compressed.push(current_start);
             compressed.push(count);
-            current_start = indices[i];
+            current_start = *item;
             count = 1;
         }
     }
@@ -153,7 +126,6 @@ impl InvertedIndex {
     }
 
     pub fn insert(&mut self, key: KVPair, value: InvertedIndexItem, skip_compression: bool) {
-        // println!("Inserting INTO INVERTED INDEX: {:?}", key);
         if !skip_compression {
             let compressed_indices = compress_indices(value.indices);
             let value = InvertedIndexItem {
@@ -164,26 +136,14 @@ impl InvertedIndex {
         } else {
             self.tree.insert(key, value).expect("Failed to insert");
         }
-        // let compressed_indices = compress_indices(value.indices);
-        // let value = InvertedIndexItem {
-        //     indices: compressed_indices,
-        //     ids: value.ids,
-        // };
-        // self.tree.insert(key, value).expect("Failed to insert");
     }
 
     pub fn get(&mut self, key: KVPair) -> Option<InvertedIndexItem> {
-        // println!("Getting key: {:?}", key);
         match self.tree.search(key) {
             Ok(v) => {
-                // decompress the indices
                 match v {
                     Some(mut item) => {
-                        println!("Search result: {:?}", item); // Add this
-
                         item.indices = decompress_indices(item.indices);
-                        println!("Decompressed indices: {:?}", item.indices); // Check output
-
                         Some(item)
                     }
                     None => None,
@@ -196,7 +156,6 @@ impl InvertedIndex {
     pub fn insert_append(&mut self, key: KVPair, mut value: InvertedIndexItem) {
         match self.get(key.clone()) {
             Some(mut v) => {
-                // v.indices.extend(value.indices);
                 v.ids.extend(value.ids);
 
                 let mut decompressed = v.indices.clone();
@@ -210,17 +169,12 @@ impl InvertedIndex {
                 decompressed.sort_unstable();
                 decompressed.dedup();
 
-                // println!("Before compression: {:?}", decompressed);
-
                 v.indices = compress_indices(decompressed);
-
-                // println!("After compression: {:?}", v.indices);
 
                 self.insert(key, v, true);
             }
             None => {
                 value.indices = compress_indices(value.indices);
-                // println!("Compressed: {:?}", value.indices);
                 self.insert(key, value, true);
             }
         }

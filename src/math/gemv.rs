@@ -1,6 +1,6 @@
 use crate::constants::VECTOR_SIZE;
 
-pub fn gemv(matrix: &Vec<[f32; VECTOR_SIZE]>, vector: &[f32; VECTOR_SIZE]) -> Vec<f32> {
+pub fn gemv(matrix: &[[f32; VECTOR_SIZE]], vector: &[f32; VECTOR_SIZE]) -> Vec<f32> {
     let mut result = vec![0f32; VECTOR_SIZE];
     for (i, row) in matrix.iter().enumerate() {
         let mut sum = 0f32;

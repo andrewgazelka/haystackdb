@@ -8,6 +8,7 @@ use crate::structures::metadata_index::KVPair;
 use crate::utils::quantize;
 use std::io;
 use std::path::PathBuf;
+use tracing::warn;
 
 pub struct QueryService {
     pub state: NamespaceState,
@@ -37,7 +38,7 @@ impl QueryService {
         let mut current_batch = Vec::new();
 
         for index in indices {
-            if current_batch.len() == 0 {
+            if current_batch.is_empty() {
                 current_batch.push(index);
             } else {
                 let last_index = current_batch[current_batch.len() - 1];
@@ -54,11 +55,9 @@ impl QueryService {
         current_batch.sort();
         current_batch.dedup();
 
-        if current_batch.len() > 0 {
+        if !current_batch.is_empty() {
             batch_indices.push(current_batch);
         }
-
-        // println!("BATCH INDICES: {:?}", batch_indices.len());
 
         let mut top_k_indices = Vec::new();
 
@@ -71,7 +70,7 @@ impl QueryService {
                     .par_iter()
                     .enumerate()
                     .fold(
-                        || Vec::new(),
+                        Vec::new,
                         |mut acc, (idx, vector)| {
                             let distance = hamming_distance(&quantized_query_vector, vector);
 
@@ -91,7 +90,7 @@ impl QueryService {
                         },
                     )
                     .reduce(
-                        || Vec::new(), // Initializer for the reduce step
+                        Vec::new, // Initializer for the reduce step
                         |mut a, mut b| {
                             // How to combine results from different threads
                             a.append(&mut b);
@@ -112,7 +111,7 @@ impl QueryService {
                     kvs.push(item.kvs);
                 }
                 None => {
-                    println!("Metadata not found");
+                    warn!(id, "Metadata not found for ID");
                     continue;
                 }
             }

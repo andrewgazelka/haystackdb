@@ -39,6 +39,7 @@ mod filters_tests {
                 indices: vec![1, 2],
                 ids: vec![0, 0],
             },
+            false,
         );
         index.insert(
             KVPair::new("page_id".to_string(), "page2".to_string()),
@@ -46,6 +47,7 @@ mod filters_tests {
                 indices: vec![3],
                 ids: vec![0],
             },
+            false,
         );
         index.insert(
             KVPair::new("public".to_string(), "1".to_string()),
@@ -53,6 +55,7 @@ mod filters_tests {
                 indices: vec![1, 3],
                 ids: vec![0, 0],
             },
+            false,
         );
         index.insert(
             KVPair::new("permission_id".to_string(), "3iQK2VC4".to_string()),
@@ -60,6 +63,7 @@ mod filters_tests {
                 indices: vec![2],
                 ids: vec![0],
             },
+            false,
         );
         index.insert(
             KVPair::new("permission_id".to_string(), "wzw8zpnQ".to_string()),
@@ -67,6 +71,7 @@ mod filters_tests {
                 indices: vec![3],
                 ids: vec![0],
             },
+            false,
         );
         index
     }

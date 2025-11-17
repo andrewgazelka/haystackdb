@@ -74,8 +74,7 @@ where
         match self.node_type {
             NodeType::Internal => {
                 if b <= 1 || b > self.keys.len() {
-                    return Err(io::Error::new(
-                        io::ErrorKind::Other,
+                    return Err(io::Error::other(
                         "Invalid split point for internal node",
                     ));
                 }
@@ -103,8 +102,7 @@ where
             }
             NodeType::Leaf => {
                 if b < 1 || b >= self.keys.len() {
-                    return Err(io::Error::new(
-                        io::ErrorKind::Other,
+                    return Err(io::Error::other(
                         "Invalid split point for leaf node",
                     ));
                 }
@@ -134,7 +132,7 @@ where
 
     pub fn is_full(&self) -> bool {
         let b = self.max_keys;
-        return self.keys.len() >= (2 * b - 1);
+        self.keys.len() >= (2 * b - 1)
     }
 
     pub fn serialize(&self) -> Vec<u8> {
@@ -148,7 +146,7 @@ where
 
         for key in &self.keys {
             let serialized_key = key.serialize();
-            serialized.extend_from_slice(&serialize_length(
+            serialized.extend_from_slice(serialize_length(
                 &mut Vec::new(),
                 serialized_key.len() as u32,
             ));
@@ -159,7 +157,7 @@ where
             match value {
                 Some(value) => {
                     let serialized_value = value.serialize();
-                    serialized.extend_from_slice(&serialize_length(
+                    serialized.extend_from_slice(serialize_length(
                         &mut Vec::new(),
                         serialized_value.len() as u32,
                     ));
@@ -195,7 +193,7 @@ where
 
         let mut keys = Vec::with_capacity(keys_len);
         for _ in 0..keys_len {
-            let key_size = read_length(&data[offset..offset + 4]) as usize;
+            let key_size = read_length(&data[offset..offset + 4]);
             offset += 4;
             let key = K::deserialize(&data[offset..offset + key_size]);
             offset += key_size;
@@ -204,7 +202,7 @@ where
 
         let mut values = Vec::with_capacity(values_len);
         for _ in 0..values_len {
-            let value_size = read_length(&data[offset..offset + 4]) as usize;
+            let value_size = read_length(&data[offset..offset + 4]);
             offset += 4;
             let value = if value_size > 0 {
                 Some(V::deserialize(&data[offset..offset + value_size]))

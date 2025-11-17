@@ -5,13 +5,14 @@ pub mod storage;
 use std::fmt::{Debug, Display};
 use std::io;
 use std::path::PathBuf;
+use tracing::{error, warn};
 
 use node::{Node, NodeType};
 use serialization::{TreeDeserialization, TreeSerialization};
 use storage::StorageManager;
 
 pub struct Tree<K, V> {
-    pub b: usize,
+    pub branching_factor: usize,
     pub storage_manager: storage::StorageManager<K, V>,
 }
 
@@ -23,41 +24,30 @@ where
     pub fn new(path: PathBuf) -> io::Result<Self> {
         let mut storage_manager = StorageManager::<K, V>::new(path)?;
 
-        // println!("INIT Used space: {}", storage_manager.used_space);
-
         if storage_manager.used_space() == 0 {
-            let root_offset: usize;
             let mut root = Node::new_leaf(0);
             root.is_root = true;
-            root_offset = storage_manager.store_node(&mut root)?;
+            let root_offset: usize = storage_manager.store_node(&mut root)?;
             storage_manager.set_root_offset(root_offset);
-            // println!("Initialized from scratch with Root offset: {}", root_offset);
         }
 
         Ok(Tree {
             storage_manager,
-            b: 32,
+            branching_factor: 32,
         })
     }
 
     pub fn insert(&mut self, key: K, value: V) -> Result<(), io::Error> {
-        // println!("Inserting key: {}, value: {}", key, value);
         let mut root = self
             .storage_manager
             .load_node(self.storage_manager.root_offset())?;
 
-        // println!("Root offset: {}, {}", self.root_offset, root.offset);
-
         if root.is_full() {
-            // println!("Root is full, needs splitting");
             let mut new_root = Node::new_internal(0);
             new_root.is_root = true;
-            let (median, mut sibling) = root.split(self.b)?;
-            // println!("Root split: median = {}, new sibling created", median);
-            // println!("Root split: median = {}, new sibling created", median);
+            let (median, mut sibling) = root.split(self.branching_factor)?;
             root.is_root = false;
             self.storage_manager.store_node(&mut root)?;
-            // println!("Root stored");
             let sibling_offset = self.storage_manager.store_node(&mut sibling)?;
             new_root.keys.push(median);
             new_root.children.push(self.storage_manager.root_offset()); // old root offset
@@ -70,15 +60,8 @@ where
             sibling.parent_offset = Some(new_root.offset);
             self.storage_manager.store_node(&mut root)?;
             self.storage_manager.store_node(&mut sibling)?;
-            // println!(
-            //     "New root created with children offsets: {} and {}",
-            //     self.root_offset, sibling_offset
-            // );
         }
-        // println!("Inserting into non-full root");
         self.insert_non_full(self.storage_manager.root_offset(), key, value, 0)?;
-
-        // println!("Inserted key, root offset: {}", self.root_offset);
 
         Ok(())
     }
@@ -92,56 +75,28 @@ where
     ) -> Result<(), io::Error> {
         if depth > 100 {
             // Set a reasonable limit based on your observations
-            println!("Recursion depth limit reached: {}", depth);
+            error!(depth, "Recursion depth limit reached");
             return Ok(());
         }
 
         let mut node = self.storage_manager.load_node(node_offset)?;
-        // println!(
-        //     "Depth: {}, Node type: {:?}, Keys: {:?}, is_full: {}",
-        //     depth,
-        //     node.node_type,
-        //     node.keys,
-        //     node.is_full()
-        // );
 
         if node.node_type == NodeType::Leaf {
             let idx = node.keys.binary_search(&key).unwrap_or_else(|x| x);
-            // println!(
-            //     "Inserting into leaf node: key: {}, len: {}",
-            //     key,
-            //     node.keys.len()
-            // );
-            // println!(
-            //     "Inserting into leaf node: key: {}, idx: {}, node_offset: {}",
-            //     key, idx, node_offset
-            // );
 
             if node.keys.get(idx) == Some(&key) {
                 node.values[idx] = Some(value);
 
-                // println!(
-                //     "Storing leaf node with keys: {:?}, offset: {}",
-                //     node.keys, node.offset
-                // );
                 self.storage_manager.store_node(&mut node)?;
                 if node.is_root {
-                    // println!("Updating root offset to: {}", node.offset);
-                    // self.root_offset = node.offset.clone();
                     self.storage_manager.set_root_offset(node.offset);
                 }
             } else {
                 node.keys.insert(idx, key);
                 node.values.insert(idx, Some(value));
 
-                // println!(
-                //     "Storing leaf node with keys: {:?}, offset: {}",
-                //     node.keys, node.offset
-                // );
                 self.storage_manager.store_node(&mut node)?;
                 if node.is_root {
-                    // println!("Updating root offset to: {}", node.offset);
-                    // self.root_offset = node.offset.clone();
                     self.storage_manager.set_root_offset(node.offset);
                 }
             }
@@ -151,8 +106,7 @@ where
             let mut child = self.storage_manager.load_node(child_offset)?;
 
             if child.is_full() {
-                // println!("Child is full, needs splitting");
-                let (median, mut sibling) = child.split(self.b)?;
+                let (median, mut sibling) = child.split(self.branching_factor)?;
                 let sibling_offset = self.storage_manager.store_node(&mut sibling)?;
 
                 node.keys.insert(idx, median.clone());
@@ -177,7 +131,6 @@ where
     }
 
     fn search_node(&mut self, node_offset: usize, key: K) -> Result<Option<V>, io::Error> {
-        // println!("Searching for key: {} at offset: {}", key, node_offset);
         let node = self.storage_manager.load_node(node_offset)?;
 
         match node.node_type {
@@ -247,7 +200,7 @@ where
             }
             NodeType::Leaf => {
                 let mut idx = node.keys.binary_search(&start).unwrap_or_else(|x| x);
-                if node.keys.len() == 0 {
+                if node.keys.is_empty() {
                     return Ok(());
                 }
                 if idx == node.keys.len() {
@@ -268,7 +221,7 @@ where
 
     pub fn batch_insert(&mut self, entries: Vec<(K, V)>) -> Result<(), io::Error> {
         if entries.is_empty() {
-            println!("No entries to insert");
+            warn!("No entries to insert in batch_insert");
             return Ok(());
         }
 
@@ -289,12 +242,11 @@ where
             }
 
             if node.is_full() {
-                let (median, mut sibling) = node.split(self.b)?;
+                let (median, mut sibling) = node.split(self.branching_factor)?;
                 let sibling_offset = self.storage_manager.store_node(&mut sibling)?;
                 self.storage_manager.store_node(&mut node)?; // Store changes to the original node after splitting
 
                 if node.is_root {
-                    // println!("Creating new root");
                     // Create a new root if the current node is the root
                     let mut new_root = Node::new_internal(0);
                     new_root.is_root = true;
@@ -307,13 +259,11 @@ where
                     node.is_root = false;
                     node.parent_offset = Some(new_root_offset);
                     sibling.parent_offset = Some(new_root_offset);
-                    // println!("New root offset: {}", new_root_offset);
                     self.storage_manager.store_node(&mut node)?;
                     self.storage_manager.store_node(&mut sibling)?;
                 } else {
                     // Update the parent node with the new median
                     let parent_offset = node.parent_offset.unwrap();
-                    // println!("Parent offset: {}", parent_offset);
                     let mut parent = self.storage_manager.load_node(parent_offset)?;
                     let idx = parent
                         .keys
@@ -352,5 +302,10 @@ where
         }
 
         Ok(current_offset)
+    }
+
+    /// Flush all changes to disk for durability
+    pub fn flush(&mut self) -> io::Result<()> {
+        self.storage_manager.flush()
     }
 }
